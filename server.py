@@ -1,52 +1,149 @@
-from flask import Flask, request, send_file, render_template_string, redirect, url_for
-import json, time, os
+from flask import Flask, request, send_file, redirect, url_for, render_template_string, flash
+import os
+import json
+import time
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+app.secret_key = 'supersecretkey'
+UPLOAD_FOLDER = os.path.dirname(os.path.abspath(__file__))
+FIRMWARE_PATH = os.path.join(UPLOAD_FOLDER, 'firmware.bin')
+VERSION_PATH = os.path.join(UPLOAD_FOLDER, 'firmware.json')
+DEVICES_PATH = os.path.join(UPLOAD_FOLDER, 'devices.json')
 
-DEVICE_FILE = "devices.json"
-FIRMWARE_FILE = "firmware.bin"
-
-# HTML-Template direkt im Code
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="de">
 <head>
-    <title>OTA Dashboard</title>
+    <meta charset="UTF-8">
+    <title>OTA Management Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { font-family: Arial; background: #f5f5f5; padding: 20px; }
-        table { border-collapse: collapse; width: 100%; background: white; }
-        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-        th { background-color: #eee; }
-        h1 { color: #333; }
-        .upload-box { margin-top: 20px; background: white; padding: 20px; border: 1px solid #ccc; }
+        body { background-color: #f4f4f4; padding: 30px; }
+        .card { margin-bottom: 20px; }
+        .table th, .table td { vertical-align: middle; }
     </style>
 </head>
 <body>
-    <h1>OTA Dashboard</h1>
-    <h3>Online-Geräte</h3>
-    <table>
-        <tr><th>MAC-Adresse</th><th>IP</th><th>Zuletzt gesehen</th></tr>
-        {% for mac, info in devices.items() %}
-        <tr>
-            <td>{{ mac }}</td>
-            <td>{{ info.ip }}</td>
-            <td>{{ info.last_seen }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+<div class="container">
+    <h1 class="mb-4 text-center">ESP32 OTA Management</h1>
 
-    <div class="upload-box">
-        <h3>Firmware hochladen (.bin)</h3>
-        <form action="/upload" method="POST" enctype="multipart/form-data">
-            <input type="file" name="firmware" accept=".bin" required>
-            <button type="submit">Upload</button>
-        </form>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="alert alert-success">
+          {% for message in messages %}
+            <div>{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Firmware hochladen</h5>
+            <form action="/upload" method="post" enctype="multipart/form-data" class="row g-3">
+                <div class="col-md-6">
+                    <input type="file" name="firmware" accept=".bin" class="form-control" required>
+                </div>
+                <div class="col-md-4">
+                    <input type="text" name="version" placeholder="Version z.B. 1.0.2" class="form-control" required>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary w-100">Hochladen</button>
+                </div>
+            </form>
+            <p class="mt-3">Aktuelle Version (Server): <strong>{{ version }}</strong></p>
+            <p>Firmware-Link: <code>/firmware</code> | Versionsinfo: <code>/firmware.json</code></p>
+        </div>
     </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Online-Geräte</h5>
+            <table class="table table-bordered table-striped">
+                <thead class="table-light">
+                    <tr>
+                        <th>MAC-Adresse</th>
+                        <th>IP-Adresse</th>
+                        <th>Firmware-Version</th>
+                        <th>Zuletzt gesehen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mac, info in devices.items() %}
+                    <tr>
+                        <td>{{ mac }}</td>
+                        <td>{{ info.ip }}</td>
+                        <td>{{ info.version if 'version' in info else 'unbekannt' }}</td>
+                        <td>{{ info.last_seen }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" class="text-center">Keine Geräte online.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 </body>
 </html>
 '''
 
-# ESP32 meldet sich hier
+@app.route('/')
+def index():
+    version = "unbekannt"
+    if os.path.exists(VERSION_PATH):
+        with open(VERSION_PATH, 'r') as f:
+            try:
+                version = json.load(f).get("version", "unbekannt")
+            except:
+                pass
+
+    devices = {}
+    if os.path.exists(DEVICES_PATH):
+        with open(DEVICES_PATH, 'r') as f:
+            try:
+                devices = json.load(f)
+            except:
+                pass
+
+    sorted_devices = dict(sorted(devices.items(), key=lambda item: item[1]['last_seen'], reverse=True))
+    return render_template_string(HTML_TEMPLATE, version=version, devices=sorted_devices)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'firmware' not in request.files or 'version' not in request.form:
+        flash("Fehler: Datei oder Version fehlt.")
+        return redirect(url_for('index'))
+
+    file = request.files['firmware']
+    version = request.form['version']
+    filename = secure_filename(file.filename)
+
+    if not filename.endswith('.bin'):
+        flash("Nur .bin-Dateien erlaubt!")
+        return redirect(url_for('index'))
+
+    file.save(FIRMWARE_PATH)
+
+    with open(VERSION_PATH, 'w') as f:
+        json.dump({"version": version, "url": request.url_root.rstrip('/') + "/firmware"}, f)
+
+    flash("Firmware und Version erfolgreich aktualisiert!")
+    return redirect(url_for('index'))
+
+@app.route('/firmware')
+def firmware():
+    if os.path.exists(FIRMWARE_PATH):
+        return send_file(FIRMWARE_PATH, mimetype='application/octet-stream')
+    return "Firmware nicht gefunden", 404
+
+@app.route('/firmware.json')
+def firmware_info():
+    if os.path.exists(VERSION_PATH):
+        return send_file(VERSION_PATH, mimetype='application/json')
+    return json.dumps({"error": "Keine Versionsinfo vorhanden"}), 404
+
 @app.route('/ping', methods=['POST'])
 def ping():
     data = request.get_json()
@@ -54,46 +151,24 @@ def ping():
         return "Fehlende MAC-Adresse", 400
 
     devices = {}
-    if os.path.exists(DEVICE_FILE):
-        with open(DEVICE_FILE, 'r') as f:
-            devices = json.load(f)
+    if os.path.exists(DEVICES_PATH):
+        with open(DEVICES_PATH, 'r') as f:
+            try:
+                devices = json.load(f)
+            except:
+                devices = {}
 
     devices[data['mac']] = {
         'ip': request.remote_addr,
-        'last_seen': time.strftime('%Y-%m-%d %H:%M:%S')
+        'last_seen': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'version': data.get('version', 'unbekannt')
     }
 
-    with open(DEVICE_FILE, 'w') as f:
-        json.dump(devices, f)
+    with open(DEVICES_PATH, 'w') as f:
+        json.dump(devices, f, indent=2)
 
     return "OK", 200
 
-# OTA: ESP lädt Firmware
-@app.route('/firmware')
-def firmware():
-    if os.path.exists(FIRMWARE_FILE):
-        return send_file(FIRMWARE_FILE, mimetype='application/octet-stream')
-    return "Firmware nicht gefunden", 404
-
-# Upload der Firmware durch Admin
-@app.route('/upload', methods=['POST'])
-def upload():
-    if 'firmware' not in request.files:
-        return redirect(url_for('dashboard'))
-
-    file = request.files['firmware']
-    if file and file.filename.endswith('.bin'):
-        file.save(FIRMWARE_FILE)
-    return redirect(url_for('dashboard'))
-
-# Admin Dashboard
-@app.route('/')
-def dashboard():
-    devices = {}
-    if os.path.exists(DEVICE_FILE):
-        with open(DEVICE_FILE, 'r') as f:
-            devices = json.load(f)
-    return render_template_string(HTML_TEMPLATE, devices=devices)
-
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8008)
+    app.run(host='0.0.0.0', port=8008, debug=True)
+
