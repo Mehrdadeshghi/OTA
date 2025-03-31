@@ -1,0 +1,102 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Update.h>
+
+const char* ssid = "DEIN_WIFI_SSID";
+const char* password = "DEIN_WIFI_PASSWORT";
+
+// Server-Adresse
+const char* ota_host = "http://45.195.250.247:8008";
+unsigned long lastPingTime = 0;
+unsigned long pingInterval = 60000; // alle 60 Sekunden
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  Serial.println("Verbindung wird hergestellt...");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+
+  Serial.println("\nVerbunden mit WiFi.");
+  Serial.println(WiFi.localIP());
+
+  // Beim Start sofort OTA versuchen
+  checkForOTAUpdate();
+
+  // Beim Start den Server pingen
+  sendPing();
+}
+
+void loop() {
+  // Regelmäßig pingen (um online zu bleiben im Dashboard)
+  if (millis() - lastPingTime > pingInterval) {
+    sendPing();
+    lastPingTime = millis();
+  }
+}
+
+// Funktion: ESP sendet MAC-Adresse an Server (für Online-Dashboard)
+void sendPing() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(String(ota_host) + "/ping");
+    http.addHeader("Content-Type", "application/json");
+    String jsonBody = "{\"mac\": \"" + WiFi.macAddress() + "\"}";
+    int httpCode = http.POST(jsonBody);
+
+    if (httpCode > 0) {
+      Serial.println("Ping erfolgreich.");
+    } else {
+      Serial.printf("Ping fehlgeschlagen: %d\n", httpCode);
+    }
+    http.end();
+  }
+}
+
+// Funktion: OTA-Update durchführen
+void checkForOTAUpdate() {
+  HTTPClient http;
+  String url = String(ota_host) + "/firmware";
+  Serial.println("Suche nach Firmware unter: " + url);
+  http.begin(url);
+
+  int httpCode = http.GET();
+  if (httpCode == 200) {
+    int contentLength = http.getSize();
+    bool canBegin = Update.begin(contentLength);
+
+    if (canBegin) {
+      WiFiClient& stream = http.getStream();
+      size_t written = Update.writeStream(stream);
+
+      if (written == contentLength) {
+        Serial.println("Firmware vollständig geladen.");
+      } else {
+        Serial.printf("Nur %d von %d Bytes geschrieben\n", written, contentLength);
+      }
+
+      if (Update.end()) {
+        if (Update.isFinished()) {
+          Serial.println("Update erfolgreich. Neustart...");
+          delay(1000);
+          ESP.restart();
+        } else {
+          Serial.println("Update unvollständig.");
+        }
+      } else {
+        Serial.printf("Fehler beim Update: %s\n", Update.errorString());
+      }
+
+    } else {
+      Serial.println("Nicht genügend Speicher für OTA.");
+    }
+
+  } else {
+    Serial.printf("Firmware konnte nicht geladen werden (HTTP-Code: %d)\n", httpCode);
+  }
+
+  http.end();
+}
