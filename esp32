@@ -6,9 +6,9 @@
 const char* ssid = "Eshghi2,4";
 const char* password = "SabziPolo";
 
-#define CURRENT_FIRMWARE_VERSION "1.0.2"  // Deine aktuelle Firmware-Version
+#define CURRENT_FIRMWARE_VERSION "1.0.2"
 
-const char* ota_host = "http://45.195.250.247:8008";  // Lokale IP des OTA-Servers
+const char* ota_host = "http://45.195.250.247:8008";  // Dein Server
 
 unsigned long lastPingTime = 0;
 unsigned long pingInterval = 60000;
@@ -26,13 +26,14 @@ void setup() {
   Serial.println("\nVerbunden mit IP:");
   Serial.println(WiFi.localIP());
 
-  checkFirmwareVersion();
+  checkDeviceFirmware();  // individuell prüfen
   sendPing();
 }
 
 void loop() {
   if (millis() - lastPingTime > pingInterval) {
     sendPing();
+    checkDeviceFirmware();  // regelmäßig prüfen
     lastPingTime = millis();
   }
 }
@@ -56,36 +57,37 @@ void sendPing() {
   }
 }
 
-void checkFirmwareVersion() {
+void checkDeviceFirmware() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
-  http.begin(String(ota_host) + "/firmware.json");
-  int httpCode = http.GET();
+  String url = String(ota_host) + "/device_firmware.json?mac=" + WiFi.macAddress();
+  http.begin(url);
 
+  int httpCode = http.GET();
   if (httpCode == 200) {
     String payload = http.getString();
     StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, payload);
 
     if (!error) {
-      const char* latestVersion = doc["version"];
+      const char* assignedVersion = doc["version"];
       const char* firmwareUrl = doc["url"];
 
       Serial.printf("Installierte Version: %s\n", CURRENT_FIRMWARE_VERSION);
-      Serial.printf("Server-Version: %s\n", latestVersion);
+      Serial.printf("Zugewiesene Version: %s\n", assignedVersion);
 
-      if (strcmp(latestVersion, CURRENT_FIRMWARE_VERSION) != 0) {
-        Serial.println("Neue Version verfügbar – OTA wird gestartet.");
+      if (String(assignedVersion) != CURRENT_FIRMWARE_VERSION && String(assignedVersion) != "") {
+        Serial.println("Neue Version erkannt – OTA wird gestartet.");
         performOTA(firmwareUrl);
       } else {
-        Serial.println("Firmware ist aktuell.");
+        Serial.println("Firmware ist aktuell oder keine zugewiesen.");
       }
     } else {
-      Serial.println("Fehler beim Parsen der Firmware-Version.");
+      Serial.println("Fehler beim Parsen von device_firmware.json.");
     }
   } else {
-    Serial.printf("Fehler beim Abrufen von /firmware.json: HTTP %d\n", httpCode);
+    Serial.printf("Fehler beim Abrufen von /device_firmware.json: HTTP %d\n", httpCode);
   }
 
   http.end();
